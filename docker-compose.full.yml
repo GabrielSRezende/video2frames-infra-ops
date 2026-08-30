@@ -1,0 +1,104 @@
+networks:
+  video2frames-net:
+    name: video2frames-net
+
+services:
+  authdb:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authdb
+      POSTGRES_USER: authdb
+      POSTGRES_PASSWORD: authdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - authdb-data:/var/lib/postgresql/data
+    networks:
+      - video2frames-net
+
+  videodb:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: videodb
+      POSTGRES_USER: videodb
+      POSTGRES_PASSWORD: videodb
+    ports:
+      - "5433:5432"
+    volumes:
+      - videodb-data:/var/lib/postgresql/data
+    networks:
+      - video2frames-net
+
+  auth-service:
+    build: ../video2frames-auth-service
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://authdb:5432/authdb
+      DB_USER: authdb
+      DB_PASSWORD: authdb
+      LOG_FORMAT: ${LOG_FORMAT:-}
+    depends_on:
+      - authdb
+    networks:
+      - video2frames-net
+
+  video-service:
+    build: ../video2frames-video-service
+    ports:
+      - "8082:8082"
+    environment:
+      DB_URL: jdbc:postgresql://videodb:5432/videodb
+      DB_USER: videodb
+      DB_PASSWORD: videodb
+      AWS_ENDPOINT_OVERRIDE: http://video2frames-localstack:4566
+      LOG_FORMAT: ${LOG_FORMAT:-}
+    depends_on:
+      - videodb
+      - localstack
+    networks:
+      - video2frames-net
+
+  # Stateless e desenhado para "competing consumers" no SQS: rodar múltiplas
+  # réplicas (docker compose ... up -d --scale processing-service=3) escala
+  # o processamento horizontalmente sem nenhuma mudança de código. Localmente
+  # isso exige remover a publicação fixa da porta 8083 abaixo primeiro (só o
+  # /actuator/prometheus depende dela) — ver docs/arquitetura.md.
+  processing-service:
+    build: ../video2frames-processing-service
+    ports:
+      - "8083:8083"
+    environment:
+      AWS_ENDPOINT_OVERRIDE: http://video2frames-localstack:4566
+      LOG_FORMAT: ${LOG_FORMAT:-}
+      PROCESSING_CONCURRENCY: ${PROCESSING_CONCURRENCY:-4}
+    depends_on:
+      - localstack
+    networks:
+      - video2frames-net
+
+  notification-service:
+    build: ../video2frames-notification-service
+    ports:
+      - "8084:8084"
+    environment:
+      AWS_ENDPOINT_OVERRIDE: http://video2frames-localstack:4566
+      LOG_FORMAT: ${LOG_FORMAT:-}
+    depends_on:
+      - localstack
+    networks:
+      - video2frames-net
+
+  web:
+    build: ../video2frames-web
+    ports:
+      - "4200:80"
+    depends_on:
+      - auth-service
+      - video-service
+    networks:
+      - video2frames-net
+
+volumes:
+  authdb-data:
+  videodb-data:

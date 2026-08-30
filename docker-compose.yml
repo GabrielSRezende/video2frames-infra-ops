@@ -1,0 +1,50 @@
+networks:
+  video2frames-net:
+    name: video2frames-net
+
+services:
+  localstack:
+    image: localstack/localstack:3
+    container_name: video2frames-localstack
+    environment:
+      SERVICES: s3,sqs
+      DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./localstack/init:/etc/localstack/init/ready.d
+    networks:
+      - video2frames-net
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: video2frames-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - video2frames-net
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: video2frames-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - video2frames-net
+
+volumes:
+  grafana-data:
