@@ -3,10 +3,34 @@ set -e
 
 awslocal s3 mb s3://video2frames
 
-awslocal sqs create-queue --queue-name video-uploaded
-awslocal sqs create-queue --queue-name video-processed
-awslocal sqs create-queue --queue-name video-failed
-awslocal sqs create-queue --queue-name video-processed-notif
-awslocal sqs create-queue --queue-name video-failed-notif
+# Cada fila de negócio ganha uma DLQ companion: depois de
+# max_receive_count tentativas sem sucesso (a mensagem volta pra fila após
+# o visibility timeout sempre que o consumidor não a deleta), o próprio SQS
+# move a mensagem para a fila -dlq automaticamente, sem nenhuma mudança no
+# código da aplicação. Isso evita retry infinito de mensagens "veneno" (ex:
+# JSON malformado) e dá um lugar observável para investigar falhas
+# persistentes, em vez de elas ficarem invisíveis, retentando pra sempre.
+create_queue_with_dlq() {
+  queue_name=$1
+  max_receive_count=$2
 
-echo "Bucket e filas do video2frames criados no LocalStack."
+  dlq_url=$(awslocal sqs create-queue --queue-name "${queue_name}-dlq" --query QueueUrl --output text)
+  dlq_arn=$(awslocal sqs get-queue-attributes --queue-url "$dlq_url" --attribute-names QueueArn --query Attributes.QueueArn --output text)
+
+  attrs_file="/tmp/redrive-${queue_name}.json"
+  cat > "$attrs_file" <<EOF
+{"RedrivePolicy": "{\"deadLetterTargetArn\":\"${dlq_arn}\",\"maxReceiveCount\":\"${max_receive_count}\"}"}
+EOF
+
+  awslocal sqs create-queue --queue-name "$queue_name" --attributes "file://${attrs_file}"
+
+  echo "Fila ${queue_name} criada com DLQ ${queue_name}-dlq (maxReceiveCount=${max_receive_count})"
+}
+
+create_queue_with_dlq video-uploaded 3
+create_queue_with_dlq video-processed 3
+create_queue_with_dlq video-failed 3
+create_queue_with_dlq video-processed-notif 3
+create_queue_with_dlq video-failed-notif 3
+
+echo "Bucket e filas (com DLQ) do video2frames criados no LocalStack."

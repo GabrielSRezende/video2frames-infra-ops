@@ -87,11 +87,14 @@ sequenceDiagram
     end
 ```
 
+### Resiliência das filas: dead-letter queue (DLQ)
+
+Cada uma das 5 filas SQS tem uma DLQ companion (`<fila>-dlq`) com `RedrivePolicy` (`maxReceiveCount=3`), provisionadas em `video2frames-infra-ops/localstack/init/00-init.sh`. Isso evita retry infinito de mensagens "veneno" (ex: JSON malformado, ou um consumidor que nunca consegue processar uma mensagem específica): depois de 3 tentativas sem a mensagem ser deletada, o próprio SQS a move para a DLQ automaticamente — sem nenhuma mudança de código na aplicação, já que isso é uma configuração da fila, não do consumidor. Em uma migração para AWS real, o mesmo padrão se traduz diretamente em `aws_sqs_queue` + `redrive_policy` no Terraform.
+
 ### Gaps conhecidos da saga (honestidade acima de charme)
 
 - **T1 não é atômico**: se o `save` inicial funcionar mas o upload ao S3 falhar (ou vice-versa), hoje não existe uma compensação automática para esse caso específico — o vídeo ficaria com status `UPLOADED`/`PROCESSING` sem nunca avançar. Mitigação futura natural: um job de "vídeos travados há mais de X minutos sem evento" que os marca como `FAILED` e aciona a mesma compensação de T3b.
 - **Compensação best-effort**: a remoção do arquivo original no S3 (C1) é tentada uma única vez; se falhar (S3 indisponível no momento), fica logada como órfã, mas nada tenta de novo depois. Aceitável para o escopo atual, mas um candidato natural para uma fila de compensações pendentes se o sistema crescer.
-- **Sem DLQ configurada**: mensagens que falham indefinidamente no parsing (ex: JSON malformado) voltam pra fila e são retentadas para sempre, sem nunca ir para uma fila de erro observável. Fica como próximo passo.
 
 ## Escalabilidade horizontal
 
@@ -116,6 +119,10 @@ Cada serviço com estado tem seu próprio banco (padrão *database per service*)
 
 As migrations Flyway **são** o script de criação do banco de dados versionado — não há um `.sql` solto separado, o próprio histórico de migrations em cada repositório é a fonte da verdade.
 
+## Cache
+
+O `video-service` usa **Redis** para cachear a listagem de vídeos por usuário (`GET /api/videos`) — a única leitura repetida do fluxo, já que o usuário tende a consultar o status do processamento várias vezes enquanto ele roda em background. Chave `userVideos::<email>`, TTL de 5 minutos (`spring.cache.redis.time-to-live`) como limite superior de dado desatentualizado, mas cada mudança de estado (`UploadVideoUseCase`, `HandleVideoProcessedUseCase`, `HandleVideoFailedUseCase`) já invalida explicitamente a entrada do usuário correspondente na hora, então na prática o TTL raramente chega a valer. Serialização via JDK padrão (não JSON): a serialização polimórfica de coleções genéricas via Jackson 3 no `spring-data-redis` desta versão se mostrou instável em teste, e JDK serialization é uma alternativa mais simples e madura para este caso.
+
 ## Decisões de arquitetura
 
 | Decisão | Alternativas consideradas | Por quê |
@@ -125,3 +132,4 @@ As migrations Flyway **são** o script de criação do banco de dados versionado
 | Saga coreografada (sem orquestrador) | Orquestrador central (ex: Camunda, ou um serviço "saga-orchestrator" dedicado) | O fluxo é uma cadeia linear sem passos paralelos a coordenar; um orquestrador adicionaria um componente com estado e um ponto único de falha sem benefício real neste tamanho de sistema |
 | JWT validado localmente em cada serviço (sem gateway central) | API Gateway único validando auth para todos | Mantém os serviços desacoplados (cada um decide sozinho o que autorizar) às custas de duplicar a lógica de validação de token — troca aceitável neste porte de projeto |
 | Docker Compose (não Kubernetes) para o ambiente local | Kubernetes local (kind/minikube) | Compose é suficiente para provar a arquitetura (múltiplos serviços, filas, observabilidade) com muito menos fricção de setup; o desenho já é compatível com K8s depois (containers stateless, sem dependência de nomes de host fixos além do necessário) |
+| Redis só no `video-service` (não um cache compartilhado entre serviços) | Cache compartilhado/centralizado | Só existe uma leitura repetida no sistema todo (listagem de vídeos); um cache compartilhado seria complexidade sem propósito — cada serviço que precisar de cache no futuro sobe (ou não) o seu, mantendo o desacoplamento entre bancos/caches por serviço |

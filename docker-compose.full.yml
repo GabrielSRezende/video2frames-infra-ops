@@ -29,6 +29,13 @@ services:
     networks:
       - video2frames-net
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - video2frames-net
+
   auth-service:
     build: ../video2frames-auth-service
     ports:
@@ -51,10 +58,13 @@ services:
       DB_URL: jdbc:postgresql://videodb:5432/videodb
       DB_USER: videodb
       DB_PASSWORD: videodb
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       AWS_ENDPOINT_OVERRIDE: http://video2frames-localstack:4566
       LOG_FORMAT: ${LOG_FORMAT:-}
     depends_on:
       - videodb
+      - redis
       - localstack
     networks:
       - video2frames-net
