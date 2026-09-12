@@ -69,11 +69,6 @@ services:
     networks:
       - video2frames-net
 
-  # Stateless e desenhado para "competing consumers" no SQS: rodar múltiplas
-  # réplicas (docker compose ... up -d --scale processing-service=3) escala
-  # o processamento horizontalmente sem nenhuma mudança de código. Localmente
-  # isso exige remover a publicação fixa da porta 8083 abaixo primeiro (só o
-  # /actuator/prometheus depende dela) — ver docs/arquitetura.md.
   processing-service:
     build: ../video2frames-processing-service
     ports:
