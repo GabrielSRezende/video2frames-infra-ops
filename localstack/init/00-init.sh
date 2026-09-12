@@ -3,13 +3,6 @@ set -e
 
 awslocal s3 mb s3://video2frames
 
-# Cada fila de negócio ganha uma DLQ companion: depois de
-# max_receive_count tentativas sem sucesso (a mensagem volta pra fila após
-# o visibility timeout sempre que o consumidor não a deleta), o próprio SQS
-# move a mensagem para a fila -dlq automaticamente, sem nenhuma mudança no
-# código da aplicação. Isso evita retry infinito de mensagens "veneno" (ex:
-# JSON malformado) e dá um lugar observável para investigar falhas
-# persistentes, em vez de elas ficarem invisíveis, retentando pra sempre.
 create_queue_with_dlq() {
   queue_name=$1
   max_receive_count=$2
