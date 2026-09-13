@@ -1,0 +1,3 @@
+# Scripts precisam de LF sempre, mesmo fazendo checkout no Windows —
+# CRLF quebra a execução dentro de containers Linux (ex: init do LocalStack).
+*.sh text eol=lf
