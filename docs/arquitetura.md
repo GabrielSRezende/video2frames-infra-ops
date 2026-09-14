@@ -33,11 +33,11 @@ flowchart LR
     Notification -->|e-mail de falha| User
 ```
 
-Cada serviço segue **arquitetura hexagonal** (domain / application / infrastructure) internamente — ver o README de cada repositório para os diagramas de camadas e fluxos específicos.
+Cada serviço segue **arquitetura hexagonal** (domain / application / infrastructure) internamente. Os diagramas de camadas e fluxos específicos de cada um estão no README do respectivo repositório.
 
 ## A Saga coreografada
 
-Não existe transação distribuída nem orquestrador central: cada serviço tem seu próprio banco (ou nenhum, no caso dos workers) e a consistência entre eles é garantida por uma **saga coreografada** — cada serviço reage a eventos publicados por outro e, por sua vez, publica os seus. Essa escolha é deliberada: um orquestrador central de saga adicionaria mais um componente com estado e um ponto único de falha, e o fluxo aqui é simples o suficiente (uma cadeia linear, sem passos paralelos que precisem ser sincronizados) para que a coreografia seja mais simples de operar.
+Não existe transação distribuída nem orquestrador central: cada serviço tem seu próprio banco (ou nenhum, no caso dos workers) e a consistência entre eles é garantida por uma **saga coreografada**, em que cada serviço reage a eventos publicados por outro e, por sua vez, publica os seus. Essa escolha é deliberada. Um orquestrador central de saga adicionaria mais um componente com estado e um ponto único de falha, e o fluxo aqui é simples o suficiente (uma cadeia linear, sem passos paralelos que precisem ser sincronizados) para que a coreografia seja a opção mais fácil de operar.
 
 ### Passos (transações locais)
 
@@ -51,7 +51,7 @@ Não existe transação distribuída nem orquestrador central: cada serviço tem
 
 ### Compensação
 
-Quando T2 falha definitivamente, T1 precisa ser parcialmente desfeito: o arquivo original no S3 não tem mais utilidade (o zip nunca será gerado a partir dele), então **T3b compensa T1** removendo esse arquivo do S3 (`VideoStoragePort.deleteOriginalVideo`, chamado por `HandleVideoFailedUseCase` logo após marcar o vídeo como `FAILED`). O registro no Postgres **não é apagado** — ele vira o rastro auditável da tentativa (status `FAILED` + motivo + histórico), o que também é o que alimenta a listagem de status do usuário.
+Quando T2 falha definitivamente, T1 precisa ser parcialmente desfeito: o arquivo original no S3 não tem mais utilidade, já que o zip nunca será gerado a partir dele. Então **T3b compensa T1** removendo esse arquivo do S3 (`VideoStoragePort.deleteOriginalVideo`, chamado por `HandleVideoFailedUseCase` logo após marcar o vídeo como `FAILED`). O registro no Postgres **não é apagado**, ele vira o rastro auditável da tentativa (status `FAILED` + motivo + histórico), que é também o que alimenta a listagem de status do usuário.
 
 ```mermaid
 sequenceDiagram
@@ -89,39 +89,39 @@ sequenceDiagram
 
 ### Resiliência das filas: dead-letter queue (DLQ)
 
-Cada uma das 5 filas SQS tem uma DLQ companion (`<fila>-dlq`) com `RedrivePolicy` (`maxReceiveCount=3`), provisionadas em `video2frames-infra-ops/localstack/init/00-init.sh`. Isso evita retry infinito de mensagens "veneno" (ex: JSON malformado, ou um consumidor que nunca consegue processar uma mensagem específica): depois de 3 tentativas sem a mensagem ser deletada, o próprio SQS a move para a DLQ automaticamente — sem nenhuma mudança de código na aplicação, já que isso é uma configuração da fila, não do consumidor. Em uma migração para AWS real, o mesmo padrão se traduz diretamente em `aws_sqs_queue` + `redrive_policy` no Terraform.
+Cada uma das 5 filas SQS tem uma DLQ companion (`<fila>-dlq`) com `RedrivePolicy` (`maxReceiveCount=3`), provisionadas em `video2frames-infra-ops/localstack/init/00-init.sh`. Isso evita retry infinito de mensagens "veneno" (ex: JSON malformado, ou um consumidor que nunca consegue processar uma mensagem específica). Depois de 3 tentativas sem a mensagem ser deletada, o próprio SQS a move para a DLQ automaticamente, sem nenhuma mudança de código na aplicação, já que isso é configuração da fila, não do consumidor. Em uma migração para AWS real, o mesmo padrão se traduz diretamente em `aws_sqs_queue` + `redrive_policy` no Terraform.
 
 ### Gaps conhecidos da saga (honestidade acima de charme)
 
-- **T1 não é atômico**: se o `save` inicial funcionar mas o upload ao S3 falhar (ou vice-versa), hoje não existe uma compensação automática para esse caso específico — o vídeo ficaria com status `UPLOADED`/`PROCESSING` sem nunca avançar. Mitigação futura natural: um job de "vídeos travados há mais de X minutos sem evento" que os marca como `FAILED` e aciona a mesma compensação de T3b.
+- **T1 não é atômico**: se o `save` inicial funcionar mas o upload ao S3 falhar (ou vice-versa), hoje não existe uma compensação automática para esse caso específico. O vídeo ficaria com status `UPLOADED`/`PROCESSING` sem nunca avançar. Uma mitigação futura seria um job de "vídeos travados há mais de X minutos sem evento" que os marca como `FAILED` e aciona a mesma compensação de T3b.
 - **Compensação best-effort**: a remoção do arquivo original no S3 (C1) é tentada uma única vez; se falhar (S3 indisponível no momento), fica logada como órfã, mas nada tenta de novo depois. Aceitável para o escopo atual, mas um candidato natural para uma fila de compensações pendentes se o sistema crescer.
 
 ## Escalabilidade horizontal
 
 O sistema foi desenhado para escalar em duas camadas independentes:
 
-**1. Concorrência dentro de uma instância** — o `processing-service` processa múltiplos vídeos em paralelo num pool de threads configurável (`PROCESSING_CONCURRENCY`, padrão 4): o poller busca até 10 mensagens do SQS por ciclo e as processa concorrentemente, em vez de uma por vez. Isso já é suficiente para o cenário mais comum de teste/demo (vários vídeos enviados de uma vez por um único usuário).
+**1. Concorrência dentro de uma instância**: o `processing-service` processa múltiplos vídeos em paralelo num pool de threads configurável (`PROCESSING_CONCURRENCY`, padrão 4). O poller busca até 10 mensagens do SQS por ciclo e as processa concorrentemente, em vez de uma por vez, o que já é suficiente para o cenário mais comum de teste/demo (vários vídeos enviados de uma vez por um único usuário).
 
-**2. Escala horizontal real (múltiplas réplicas)** — o `processing-service` é **stateless** (nenhum estado em memória sobrevive entre mensagens; todo arquivo temporário é único por execução) e segue o padrão **competing consumers**: várias instâncias podem consumir a mesma fila `video-uploaded` simultaneamente sem nenhuma mudança de código, porque o próprio SQS garante que cada mensagem é entregue a apenas um consumidor por vez. Isso é o que torna a arquitetura escalável de verdade — basta subir mais réplicas:
+**2. Escala horizontal real (múltiplas réplicas)**: o `processing-service` é **stateless** (nenhum estado em memória sobrevive entre mensagens, todo arquivo temporário é único por execução) e segue o padrão **competing consumers**. Várias instâncias podem consumir a mesma fila `video-uploaded` simultaneamente sem nenhuma mudança de código, porque o próprio SQS garante que cada mensagem é entregue a apenas um consumidor por vez. É isso que torna a arquitetura escalável de verdade: basta subir mais réplicas.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.full.yml up -d --scale processing-service=3
 ```
 
-> Ressalva local: como o `docker-compose.full.yml` publica a porta `8083` fixa (para o Prometheus conseguir fazer *scrape* via `host.docker.internal:8083` e para permitir `curl` direto durante o desenvolvimento), rodar `--scale` acima de 1 réplica localmente exige remover essa publicação de porta fixa primeiro (nada além do endpoint de métricas depende dela). Em Kubernetes essa ressalva desaparece: cada pod tem seu próprio IP, e o Prometheus descobre os alvos dinamicamente via *service discovery* em vez de um endereço fixo — não é uma limitação da arquitetura, é uma simplificação deliberada do ambiente de desenvolvimento local.
+> Ressalva local: como o `docker-compose.full.yml` publica a porta `8083` fixa (para o Prometheus conseguir fazer *scrape* via `host.docker.internal:8083` e para permitir `curl` direto durante o desenvolvimento), rodar `--scale` acima de 1 réplica localmente exige remover essa publicação de porta fixa primeiro (nada além do endpoint de métricas depende dela). Em Kubernetes essa ressalva some, porque cada pod tem seu próprio IP e o Prometheus descobre os alvos dinamicamente via *service discovery* em vez de um endereço fixo. Não é uma limitação da arquitetura, é só uma simplificação do ambiente de desenvolvimento local.
 
 ## Persistência
 
 Cada serviço com estado tem seu próprio banco (padrão *database per service*):
 - `auth-service` → Postgres `authdb`, schema versionado via Flyway (`src/main/resources/db/migration`).
 - `video-service` → Postgres `videodb`, schema versionado via Flyway (`src/main/resources/db/migration`).
-- `processing-service` e `notification-service` não persistem nada — são workers puros, todo o estado do pipeline vive nos eventos SQS e no `video-service`.
+- `processing-service` e `notification-service` não persistem nada, são workers puros: todo o estado do pipeline vive nos eventos SQS e no `video-service`.
 
-As migrations Flyway **são** o script de criação do banco de dados versionado — não há um `.sql` solto separado, o próprio histórico de migrations em cada repositório é a fonte da verdade.
+As migrations Flyway **são** o script de criação do banco de dados versionado. Não há um `.sql` solto separado; o próprio histórico de migrations em cada repositório é a fonte da verdade.
 
 ## Cache
 
-O `video-service` usa **Redis** para cachear a listagem de vídeos por usuário (`GET /api/videos`) — a única leitura repetida do fluxo, já que o usuário tende a consultar o status do processamento várias vezes enquanto ele roda em background. Chave `userVideos::<email>`, TTL de 5 minutos (`spring.cache.redis.time-to-live`) como limite superior de dado desatentualizado, mas cada mudança de estado (`UploadVideoUseCase`, `HandleVideoProcessedUseCase`, `HandleVideoFailedUseCase`) já invalida explicitamente a entrada do usuário correspondente na hora, então na prática o TTL raramente chega a valer. Serialização via JDK padrão (não JSON): a serialização polimórfica de coleções genéricas via Jackson 3 no `spring-data-redis` desta versão se mostrou instável em teste, e JDK serialization é uma alternativa mais simples e madura para este caso.
+O `video-service` usa **Redis** para cachear a listagem de vídeos por usuário (`GET /api/videos`), a única leitura repetida do fluxo, já que o usuário tende a consultar o status do processamento várias vezes enquanto ele roda em background. A chave é `userVideos::<email>`, com TTL de 5 minutos (`spring.cache.redis.time-to-live`) como limite superior de dado desatualizado, mas cada mudança de estado (`UploadVideoUseCase`, `HandleVideoProcessedUseCase`, `HandleVideoFailedUseCase`) já invalida explicitamente a entrada do usuário correspondente na hora, então na prática o TTL raramente chega a valer. A serialização é via JDK padrão e não JSON: a serialização polimórfica de coleções genéricas via Jackson 3 no `spring-data-redis` desta versão se mostrou instável em teste, e JDK serialization acabou sendo uma alternativa mais simples e madura para este caso.
 
 ## Decisões de arquitetura
 

@@ -13,13 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # docker-compose.yml (infra compartilhada) não depende de nenhum
-      # repositório irmão, então dá pra validar isoladamente no CI.
       - name: Validate docker-compose.yml
         run: docker compose -f docker-compose.yml config --quiet
 
-      # docker-compose.full.yml referencia os repositórios irmãos via build
-      # context (../video2frames-*), que não existem neste checkout isolado
-      # — validamos só a sintaxe YAML, não a resolução completa do compose.
+      # repos irmãos não existem neste checkout, então só checa a sintaxe YAML
       - name: Lint docker-compose.full.yml (YAML syntax only)
         run: python3 -c "import yaml,sys; yaml.safe_load(open('docker-compose.full.yml'))"
