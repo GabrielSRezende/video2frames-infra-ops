@@ -88,6 +88,8 @@ services:
       - "8084:8084"
     environment:
       AWS_ENDPOINT_OVERRIDE: http://video2frames-localstack:4566
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       LOG_FORMAT: ${LOG_FORMAT:-}
     depends_on:
       - localstack
