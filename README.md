@@ -78,6 +78,17 @@ Depois de subir (dê ~10-20s para os apps iniciarem; o build do `web` pode levar
 
 > Não rode o Modo 2 ao mesmo tempo que o `docker-compose.yml` individual de um serviço, porque ambos tentam publicar as mesmas portas de host (ex: `8082`, `5433`).
 
+### Credenciais de e-mail
+
+O `notification-service` envia o e-mail de falha por SMTP e não traz credenciais no código. Para o envio funcionar, copie `.env.example` para `.env` nesta pasta e preencha:
+
+```
+SMTP_USERNAME=seu-email@gmail.com
+SMTP_PASSWORD=senha-de-app-do-gmail
+```
+
+O `.env` está no `.gitignore` e não deve ser commitado. No Gmail, use uma senha de app (Conta Google > Segurança > Senhas de app), não a senha da conta. Sem essas variáveis o sistema sobe normalmente, mas o envio do e-mail falha.
+
 ## Derrubando tudo
 
 ```bash
